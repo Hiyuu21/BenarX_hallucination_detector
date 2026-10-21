@@ -1,0 +1,58 @@
+{
+  "tag": "full",
+  "model": "Random Forest",
+  "features": [
+    "sentence_length",
+    "word_overlap_ratio",
+    "unmatched_numbers_count",
+    "semantic_similarity",
+    "tfidf_similarity",
+    "content_overlap_best",
+    "content_overlap_top3",
+    "content_overlap_all",
+    "bigram_overlap_best",
+    "bm25_best_norm",
+    "sim_top3_mean",
+    "n_entities",
+    "n_entities_unmatched",
+    "entity_match_ratio",
+    "n_numbers",
+    "n_numbers_unmatched",
+    "number_match_ratio",
+    "is_QA",
+    "is_Summary",
+    "is_Data2txt",
+    "sent_pos_rel",
+    "n_sents_resp",
+    "resp_len_words",
+    "nli_entail_top1",
+    "nli_contra_top1",
+    "nli_entail_ctx",
+    "nli_contra_ctx",
+    "nli_neutral_ctx"
+  ],
+  "threshold_sentence": 0.38000000000000006,
+  "threshold_response": 0.35000000000000003,
+  "cv_mean": {
+    "auroc": 0.8220623580937899,
+    "pr_auc": 0.40586723708912614,
+    "best_f1": 0.4455283921690559,
+    "best_thr": 0.38000000000000006
+  },
+  "cv_std": {
+    "auroc": 0.0005711328184246578,
+    "pr_auc": 0.0020832761735492256,
+    "best_f1": 0.0011029494212142763,
+    "best_thr": 6.798699777552591e-17
+  },
+  "test": {
+    "sentence_auroc": 0.8267892817048098,
+    "sentence_pr_auc": 0.3550101230895635,
+    "sentence_f1": 0.40601503759398494,
+    "response_auroc": 0.81441134260223,
+    "response_f1": 0.6683915480810694,
+    "response_base_rate": 0.3525233644859813,
+    "classifier_ms_per_sentence": 0.031807899475097656
+  },
+  "model_file_mb": 33.079455
+}

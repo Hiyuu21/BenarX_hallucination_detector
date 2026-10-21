@@ -1,0 +1,11 @@
+{
+  "shap_batch_ms_per_sentence": 371.26772324244183,
+  "shap_single_ms": 378.41105461120605,
+  "lime_ms_per_sentence": 28.854952255884807,
+  "lime_samples": 2000,
+  "shap_rss_delta_mb": -0.004096000000004096,
+  "lime_rss_delta_mb": 3.768320000000017,
+  "lime_stability_spearman": 0.9559068627450982,
+  "lime_stability_top3_jaccard": 0.879,
+  "classifier_ms_per_sentence": 0.033089637756347656
+}
