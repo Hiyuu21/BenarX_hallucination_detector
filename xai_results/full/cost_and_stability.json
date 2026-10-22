@@ -1,11 +1,11 @@
 {
-  "shap_batch_ms_per_sentence": 472.38549550374347,
-  "shap_single_ms": 475.04215240478516,
-  "lime_ms_per_sentence": 29.378217856089275,
+  "shap_batch_ms_per_sentence": 462.2205173969269,
+  "shap_single_ms": 458.3563804626465,
+  "lime_ms_per_sentence": 28.72838219006856,
   "lime_samples": 2000,
-  "shap_rss_delta_mb": -11.898879999999963,
-  "lime_rss_delta_mb": 6.336512000000084,
+  "shap_rss_delta_mb": 0.22118399999999383,
+  "lime_rss_delta_mb": 6.07846399999994,
   "lime_stability_spearman": 0.9533059829059828,
   "lime_stability_top3_jaccard": 0.781,
-  "classifier_ms_per_sentence": 0.031807899475097656
+  "classifier_ms_per_sentence": 0.03081178665161133
 }

@@ -1,3 +1,17 @@
+# Environments
 .env
 __pycache__/
+.vscode/
+
+# Data and Caches (Do NOT commit these)
+cache/
+frozen/
+xai_results/
+data/db/
 *.pkl
+*.db
+*.joblib
+
+# Large datasets (If you want to keep them, use Git LFS. Otherwise, ignore them)
+data/raw/ragtruth/
+*.jsonl

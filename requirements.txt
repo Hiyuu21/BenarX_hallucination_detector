@@ -1,0 +1,16 @@
+pandas
+numpy
+scikit-learn
+xgboost
+spacy
+sentence-transformers
+shap
+lime
+feedparser
+trafilatura
+langchain
+langchain-ollama
+langchain-chroma
+python-dotenv
+joblib
+tqdm

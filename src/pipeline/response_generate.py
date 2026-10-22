@@ -1,29 +1,26 @@
+import sys
+import os
+# This tells Python to look 2 folders up (the 'detector' folder) for imports
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
 # ============================================================
 # IMPORTS & SETUP
 # ============================================================
-import os
-import re
-import pickle
-import joblib
+import re, json, pickle, joblib, spacy, shap
 import numpy as np
 import pandas as pd
-import spacy
-import shap
+from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from dotenv import load_dotenv
 
 # LangChain imports
 from langchain_ollama import OllamaLLM
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
 
 # Import custom feature builder from your project
-from detector_v2 import build_features_v2
-
+from src.training.detector_v2 import build_features_v2
 
 load_dotenv()
-print(f"HF_TOKEN: {'✅ Set' if os.getenv('HF_TOKEN') else '❌ Not set'}")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Load resources
@@ -103,46 +100,88 @@ def explain_feature(feature_name, value, shap_value, best_source_sentence, evide
     return f"ℹ️ {feature_name} = {value:.2f}"
 
 # ============================================================
-# STEP 1: RAG PIPELINE (RETRIEVE & GENERATE)
+# STEP 1: GENERATE QA PAIRS (Using Local Models)
 # ============================================================
-print("\n--- [1] Running RAG Pipeline ---")
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-vectorstore = Chroma(persist_directory="./malaysian_news_db", embedding_function=embeddings)
-retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-llm = OllamaLLM(model="llama3.2")
+print("\n--- [1] Generating QA pairs from Malaysian News ---")
+question_gen = OllamaLLM(model="qwen2.5:7b", temperature=0.7) 
+answer_gen = OllamaLLM(model="llama3.2:latest", temperature=0.3)
 
-question = "Did the news mention anything about haze?"
-relevant_docs = retriever.invoke(question)
-context = "\n\n".join([doc.page_content for doc in relevant_docs])
+df = pd.read_csv("./data/raw/malaysian_news/malaysian_news_clean.csv")
+generated_data = []
 
-prompt = f"""Answer the question based ONLY on the following context.
-If the context doesn't contain the answer, say "I don't know."
+for idx, row in tqdm(df.iterrows(), total=len(df), desc="Generating QA"):
+    article_text = row['text']
+    article_url = row['url']
+    
+    # Truncate if too long
+    if len(article_text.split()) > 800:
+        article_text = " ".join(article_text.split()[:800])
 
-Context:
-{context}
+    q_prompt = f"""Generate exactly 3 questions based ONLY on the facts in the article.
+    Output in valid JSON list format: ["Question 1", "Question 2", "Question 3"]
+    Article: {article_text}"""
 
-Question: {question}
+    try:
+        q_response = question_gen.invoke(q_prompt)
+        match = re.search(r'\[.*\]', q_response.replace('\n', ' '))
+        if not match: continue
+        questions = json.loads(match.group(0))
+    except Exception:
+        continue
 
-Answer:"""
+    for q in questions:
+        a_prompt = f"""Answer the question based ONLY on the provided context. 
+        If the context doesn't contain the answer, say "I don't know".
+        Context: {article_text}
+        Question: {q}
+        Answer:"""
+        
+        try:
+            answer = answer_gen.invoke(a_prompt).strip()
+            generated_data.append({
+                "id": f"news_{idx}",           # Unique ID for the article
+                "source": row['source'],
+                "url": article_url,
+                "context": article_text,
+                "question": q,
+                "answer": answer
+            })
+        except Exception:
+            pass
 
-answer = llm.invoke(prompt)
-print(f"Llama 3 Answer:\n{answer}\n")
+# Save the QA pairs
+qa_df = pd.DataFrame(generated_data)
+qa_df.to_json("./data/raw/malaysian_news/malaysian_news_qa.jsonl", orient="records", lines=True)
+print(f"✅ Saved {len(qa_df)} QA pairs.")
 
 # ============================================================
-# STEP 2: FEATURE EXTRACTION
+# STEP 2: FEATURE EXTRACTION (Looping over the generated data)
 # ============================================================
-print("--- [2] Extracting Features ---")
-doc = nlp(answer)
-sentences = [(s.text.strip(), s.start_char, s.end_char) for s in doc.sents if s.text.strip()]
+print("\n--- [2] Extracting Features ---")
+all_sentences_data = []
 
-# Build DataFrame for detector
-detector_input = pd.DataFrame([
-    {
-        'id': f'news_{i}', 'source_id': 'malaysian_news_db', 'task_type': 'Summary',
-        'sentence_chunks': sent, 'start_char': start, 'end_char': end,
-        'reference': context, 'labels': []
-    } for i, (sent, start, end) in enumerate(sentences)
-])
+# Loop through every generated QA pair to build the sentence-level DataFrame
+for _, row in tqdm(qa_df.iterrows(), total=len(qa_df), desc="Extracting features"):
+    answer = row['answer']
+    context = row['context']
+    doc_id = row['id']
+    
+    doc = nlp(answer)
+    sentences = [(s.text.strip(), s.start_char, s.end_char) for s in doc.sents if s.text.strip()]
+    
+    for i, (sent, start, end) in enumerate(sentences):
+        all_sentences_data.append({
+            'id': f"{doc_id}_s{i}", 
+            'source_id': doc_id, 
+            'task_type': 'QA',
+            'sentence_chunks': sent, 
+            'start_char': start, 
+            'end_char': end,
+            'reference': context, 
+            'labels': []
+        })
+
+detector_input = pd.DataFrame(all_sentences_data)
 
 # Compute 5 BASE features
 def calc_overlap(row):
@@ -172,7 +211,7 @@ def calc_semantic_sim(sentence):
     sent_emb = embedder.encode([sentence], show_progress_bar=False)
     return float(cosine_similarity(sent_emb, ref_embs).max())
 
-# 3. Apply features to the DataFrame
+# Apply BASE features
 detector_input['sentence_length'] = detector_input['sentence_chunks'].str.split().str.len()
 detector_input['word_overlap_ratio'] = detector_input.apply(calc_overlap, axis=1)
 detector_input['unmatched_numbers_count'] = detector_input.apply(count_bad_numbers, axis=1)
@@ -181,45 +220,39 @@ detector_input['tfidf_similarity'] = detector_input.apply(
     lambda r: calc_tfidf(r['sentence_chunks'], r['reference']), axis=1
 )
 
-# Add v2 features
+# Add V2 features
 features_v2 = build_features_v2(detector_input, nlp, embedder, use_nli=True)
 detector_input = pd.concat([detector_input, features_v2], axis=1)
 
 # ============================================================
 # STEP 3: DETECTION
 # ============================================================
-print("--- [3] Running Detector ---")
+print("\n--- [3] Running Detector ---")
 bundle = joblib.load('./frozen/frozen_full.joblib')
 model, feature_cols, threshold = bundle['model'], bundle['feature_cols'], bundle['threshold_sentence']
 
-# Safety alignment
 for col in feature_cols:
     if col not in detector_input.columns:
         detector_input[col] = 0.0
-print("Missing features: ✅ None" if all(c in detector_input.columns for c in feature_cols) else "⚠️ Features missing")
 
 X = detector_input[feature_cols].values
 probs = model.predict_proba(X)[:, 1]
+detector_input['prob'] = probs
+detector_input['is_hallucinated'] = (probs >= threshold).astype(int)
 
-for sent, p in zip(detector_input['sentence_chunks'], probs):
-    flag = "🚨 HALLUCINATED" if p >= threshold else "✅ FAITHFUL"
-    print(f"[{flag}] p={p:.3f} | {sent}")
-
-response_flag = (probs.max() >= threshold)
-print(f"\nRESPONSE-LEVEL: {'🚨 HALLUCINATED' if response_flag else '✅ FAITHFUL'} (max p={probs.max():.3f})\n")
+# Summary printout
+print(f"Analyzed {len(detector_input)} sentences.")
+print(f"Flagged {detector_input['is_hallucinated'].sum()} as hallucinated.")
 
 # ============================================================
-# STEP 4: XAI (SHAP + EXPLANATION)
+# STEP 4: XAI (SHAP + EXPLANATION) for the top flagged sentence
 # ============================================================
-print("--- [4] Generating XAI Explanations ---")
+print("\n--- [4] Generating XAI Explanations ---")
 explainer = shap.TreeExplainer(model)
 shap_values = explainer.shap_values(X)
-
-# Robustly handle SHAP shapes
 sv = np.asarray(shap_values[1] if isinstance(shap_values, list) else (shap_values[:, :, 1] if np.asarray(shap_values).ndim == 3 else shap_values))
-assert sv.ndim == 2 and sv.shape[0] == len(detector_input) and sv.shape[1] == len(feature_cols)
 
-# Show explanation for the highest-confidence flag
+# Find the most hallucinated sentence
 flagged_idx = int(np.argmax(probs))
 row_dict = detector_input.iloc[flagged_idx].to_dict()
 best_sent, best_sim = get_best_source_sentence(row_dict['sentence_chunks'], row_dict['reference'])
@@ -235,10 +268,6 @@ print(f"TOP EXPLANATION FOR: \"{row_dict['sentence_chunks']}\"")
 print(f"{'='*70}")
 print(f"Verdict: {'🚨 HALLUCINATED' if probs[flagged_idx] >= threshold else '✅ FAITHFUL'} (p={probs[flagged_idx]:.3f})")
 print(f"\nBest-matching source sentence:\n  \"{best_sent[:200]}...\"")
-print(f"  (similarity: {best_sim:.2f})")
 print("\nTop reasons:")
 for feat, value, contrib in contributions[:5]:
-    explanation = explain_feature(feat, value, contrib, best_sent, evidence)
-    print(f"  • {explanation}")
-
-print(f"\n📋 SUMMARY: Strongest signal is '{contributions[0][0]}'.")
+    print(f"  • {explain_feature(feat, value, contrib, best_sent, evidence)}")

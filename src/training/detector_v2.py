@@ -472,8 +472,8 @@ def cv_evaluate(model, X, y, groups, seeds=(0, 1, 2), n_splits=5):
 # 1. Import RAGTruth Dataset & Chunk the response
 # ------------------------------------------------
 
-RPATH = 'C:/Users/jinxl/Downloads/RAG Hallucination Detection/detector/RAGTruth/dataset/response.jsonl' 
-SPATH= 'C:/Users/jinxl/Downloads/RAG Hallucination Detection/detector/RAGTruth/dataset/source_info.jsonl'
+RPATH = "./data/raw/ragtruth/response.jsonl"
+SPATH = "./data/raw/ragtruth/source_info.jsonl"
 
 CACHE_DIR = './cache'
 os.makedirs(CACHE_DIR, exist_ok=True)       # to_pickle() does NOT create folders, so make it first
@@ -484,307 +484,313 @@ v2_train_cache = f'{CACHE_DIR}/v2_train_features.pkl'   # ONLY the new v2 featur
 v2_test_cache = f'{CACHE_DIR}/v2_test_features.pkl'
 tfidf_cache = f'{CACHE_DIR}/tfidf_vectorizer_cache.pkl'
 
-if os.path.exists(train_cache) and os.path.exists(test_cache) and os.path.exists(tfidf_cache):
-    print("Found cached data! Bypassing spaCy chunking and loading directly...")
-    exploded_train = pd.read_pickle(train_cache)
-    exploded_test = pd.read_pickle(test_cache)
-    with open(tfidf_cache, 'rb') as f:
-        global_tfidf = pickle.load(f)
+def main():
 
-else:
-    print("No cache found. Running full chunking and feature extraction pipeline...")
-    
-    responses = pd.read_json(RPATH, lines=True)
-    sources = pd.read_json(SPATH, lines=True)
-    train_set, test_set = get_data(responses, sources)
-    train_set, test_set = pd.DataFrame(train_set), pd.DataFrame(test_set)
+    if os.path.exists(train_cache) and os.path.exists(test_cache) and os.path.exists(tfidf_cache):
+        print("Found cached data! Bypassing spaCy chunking and loading directly...")
+        exploded_train = pd.read_pickle(train_cache)
+        exploded_test = pd.read_pickle(test_cache)
+        with open(tfidf_cache, 'rb') as f:
+            global_tfidf = pickle.load(f)
 
-    random.seed(2024)
-    dev_source_id = []
-    for task in['QA', 'Summary', 'Data2txt']:
-        source_ids = train_set[train_set['task_type'] == task]['source_id'].unique().tolist()
-        dev_source_id.extend(random.sample(source_ids, 50))
+    else:
+        print("No cache found. Running full chunking and feature extraction pipeline...")
+        
+        responses = pd.read_json(RPATH, lines=True)
+        sources = pd.read_json(SPATH, lines=True)
+        train_set, test_set = get_data(responses, sources)
+        train_set, test_set = pd.DataFrame(train_set), pd.DataFrame(test_set)
 
-    dev_set = train_set[train_set['source_id'].isin(dev_source_id)]
-    train_set = train_set[~train_set['source_id'].isin(dev_source_id)].reset_index(drop=True)
+        random.seed(2024)
+        dev_source_id = []
+        for task in['QA', 'Summary', 'Data2txt']:
+            source_ids = train_set[train_set['task_type'] == task]['source_id'].unique().tolist()
+            dev_source_id.extend(random.sample(source_ids, 50))
 
-    train_set.to_json('./train.jsonl', orient='records', lines=True)
-    test_set.to_json('./test.jsonl', orient='records', lines=True)
-    dev_set.to_json('./dev.jsonl', orient='records', lines=True)
+        dev_set = train_set[train_set['source_id'].isin(dev_source_id)]
+        train_set = train_set[~train_set['source_id'].isin(dev_source_id)].reset_index(drop=True)
 
-    train_set['sentence_chunks'] = train_set['response'].progress_apply(chunk_into_sentence)
-    exploded_train = train_set.explode('sentence_chunks').dropna(subset=['sentence_chunks']).reset_index(drop=True)
-    exploded_train[['sentence_chunks', 'start_char', 'end_char']] = pd.DataFrame(
-        exploded_train['sentence_chunks'].tolist(), index=exploded_train.index
-    )
+        train_set.to_json('./data/raw/train.jsonl', orient='records', lines=True)
+        test_set.to_json('./data/raw/test.jsonl', orient='records', lines=True)
+        dev_set.to_json('./data/raw/dev.jsonl', orient='records', lines=True)
 
-    test_set['sentence_chunks'] = test_set['response'].progress_apply(chunk_into_sentence)
-    exploded_test = test_set.explode('sentence_chunks').dropna(subset=['sentence_chunks']).reset_index(drop=True)
-    exploded_test[['sentence_chunks', 'start_char', 'end_char']] = pd.DataFrame(
-        exploded_test['sentence_chunks'].tolist(), index=exploded_test.index
-    )
+        train_set['sentence_chunks'] = train_set['response'].progress_apply(chunk_into_sentence)
+        exploded_train = train_set.explode('sentence_chunks').dropna(subset=['sentence_chunks']).reset_index(drop=True)
+        exploded_train[['sentence_chunks', 'start_char', 'end_char']] = pd.DataFrame(
+            exploded_train['sentence_chunks'].tolist(), index=exploded_train.index
+        )
+
+        test_set['sentence_chunks'] = test_set['response'].progress_apply(chunk_into_sentence)
+        exploded_test = test_set.explode('sentence_chunks').dropna(subset=['sentence_chunks']).reset_index(drop=True)
+        exploded_test[['sentence_chunks', 'start_char', 'end_char']] = pd.DataFrame(
+            exploded_test['sentence_chunks'].tolist(), index=exploded_test.index
+        )
+
+
+        # ------------------------------------------------
+        # 2. Add in new features
+        # ------------------------------------------------
+
+        unique_train_sources = train_set['reference'].astype(str).unique().tolist()
+        global_tfidf = TfidfVectorizer(stop_words='english', max_features=10000)
+        global_tfidf.fit(unique_train_sources)
+
+        exploded_train['sentence_length'] = exploded_train['sentence_chunks'].str.split().str.len()
+        exploded_train['word_overlap_ratio'] = exploded_train.apply(calculate_overlap, axis=1)
+        exploded_train['unmatched_numbers_count'] = exploded_train.apply(count_unmatched_numbers, axis=1)
+        exploded_train['semantic_similarity'] = compute_batch_cosine_similarity(exploded_train)
+        exploded_train['tfidf_similarity'] = compute_tfidf_overlap(exploded_train, global_tfidf)
+        exploded_train['is_hallucination'] = exploded_train.apply(tag_hallucination, axis=1)
+
+        exploded_test['sentence_length'] = exploded_test['sentence_chunks'].str.split().str.len()
+        exploded_test['word_overlap_ratio'] = exploded_test.apply(calculate_overlap, axis=1)
+        exploded_test['unmatched_numbers_count'] = exploded_test.apply(count_unmatched_numbers, axis=1)
+        exploded_test['semantic_similarity'] = compute_batch_cosine_similarity(exploded_test)
+        exploded_test['tfidf_similarity'] = compute_tfidf_overlap(exploded_test, global_tfidf)
+        exploded_test['is_hallucination'] = exploded_test.apply(tag_hallucination, axis=1)
+
+
+        #print(exploded_train[['sentence_length', 'word_overlap_ratio', 'unmatched_numbers_count']].describe())
+        #print()
+        #print(exploded_test[['sentence_length', 'word_overlap_ratio', 'unmatched_numbers_count']].describe())
+        #print()
+        
+        # Save the finished DataFrames for next time
+        print("\n --- Saving processed data to cache...")
+        exploded_train.to_pickle(train_cache)
+        exploded_test.to_pickle(test_cache)
+        with open(tfidf_cache, 'wb') as f:
+            pickle.dump(global_tfidf, f)
+
+    # ------------------------------------------------
+    # 2b. V2 features (computed once, then loaded from cache)
+    # ------------------------------------------------
+    exploded_train = load_or_build_v2(exploded_train, v2_train_cache, nlp, embedder)
+    exploded_test  = load_or_build_v2(exploded_test,  v2_test_cache,  nlp, embedder)
+
+    all_cols = BASE + LEXICAL_BEST + ENTITY_NUMBER + CONTEXT + NLI
+
+    print('\n --- Feature Correlation Check.')
+    corr = exploded_train['word_overlap_ratio'].corr(exploded_train['content_overlap_all'])
+    print(f'Correlation between word_overlap_ratio and content_overlap_all: {corr:.4f}')
+    if corr>0.95:
+        print('Dropping content_overlap_all due to high collinearity.')
+        all_cols.remove('content_overlap_all')
+        LEXICAL_BEST.remove('content_overlap_all')
+
+    # ------------------------------------------------
+    # 3. Model Training
+    # ------------------------------------------------
+
+    print("\n --- Data loaded for model training...")
+
+    X = exploded_train[all_cols]
+    Y = exploded_train['is_hallucination']
+    groups = exploded_train['source_id']
+
+    models = {
+        'Dummy (Baseline)': DummyClassifier(strategy='prior'),
+        'Decision Tree (Pruned)': DecisionTreeClassifier(max_depth=5, min_samples_leaf=20, class_weight='balanced', random_state=2024),
+        'Logistic Regression (Scaled)': make_pipeline(StandardScaler(), LogisticRegression(class_weight='balanced', max_iter=1000)),
+        'Random Forest': RandomForestClassifier(n_estimators=100, class_weight='balanced', random_state=2024, n_jobs=-1),
+        'XGBoost': XGBClassifier(scale_pos_weight=8, random_state=2024, n_jobs=-1)
+    }
+
+    global_best_model_name = None
+    global_best_auc = 0.0
+    global_oof_probs = None
+    global_best_threshold = 0.5
+    cv_results = {}
+
+    for name, model in models.items():
+        mean_metrics, std_metrics, oof = cv_evaluate(model, X, Y, groups)
+        cv_results[name] = (mean_metrics, std_metrics)
+        print(f"\n| Model:  {name:<25} ")
+        print(f"| AUROC:  {mean_metrics['auroc']:.4f} ± {std_metrics['auroc']:.4f}")
+        print(f"| PR-AUC: {mean_metrics['pr_auc']:.4f}")
+        print(f"| F1:     {mean_metrics['best_f1']:.4f}")
+
+        if mean_metrics['auroc']>global_best_auc:
+            global_best_auc = mean_metrics['auroc']
+            global_best_model_name = name
+            global_oof_probs = oof
+            global_best_threshold = mean_metrics['best_thr']
+
+    print(f"\nChampion Model: {global_best_model_name} (AUROC: {global_best_auc:.4f})")
+
+
+    print("\n --- Tuning Response-level Threshold (OOF).")
+    exploded_train['oof_prob'] = global_oof_probs
+    resp_train = exploded_train.groupby('id').agg(
+        {
+            'is_hallucination': 'max',
+            'oof_prob': 'max'
+        }).reset_index()
+
+    best_resp_thr = 0.5
+    best_resp_f1 = 0
+    for t in np.arange(0.01, 1.0, 0.01):
+        f1 = f1_score(resp_train['is_hallucination'], (resp_train['oof_prob'] >= t).astype(int), zero_division=0)
+        if f1 > best_resp_f1:
+            best_resp_f1 = f1
+            best_resp_thr = t
+
+    print(f"Optimal Response-level Threshold: {best_resp_thr:.2f} (OOF F1: {best_resp_f1:.4f})")
+    print(f"Train Response-level Base Rate: {resp_train['is_hallucination'].mean():.4f}")
+
+    # ------------------------------------------------
+    # 4. Leave-one-out Ablation Test
+    # ------------------------------------------------
+    print("\n --- Ablation Study.")
+
+    Y = exploded_train['is_hallucination']
+    groups = exploded_train['source_id']
+
+    experiments = {
+        'All Features': all_cols,
+        'No NLI': [c for c in all_cols if c not in NLI],
+        'No Context': [c for c in all_cols if c not in CONTEXT],
+        'No Entity/Num': [c for c in all_cols if c not in ENTITY_NUMBER],
+        'No Lexical': [c for c in all_cols if c not in LEXICAL_BEST],
+        'Evidence Only (No NLI/Context)': BASE + LEXICAL_BEST + ENTITY_NUMBER
+    }
+
+    for name, cols in experiments.items():
+        mean, std, _ = cv_evaluate(models[global_best_model_name], exploded_train[cols], Y, groups)
+        print(f"{name:<30} AUROC {mean['auroc']:.4f}±{std['auroc']:.4f} | PR-AUC {mean['pr_auc']:.4f} | F1 {mean['best_f1']:.4f}")
 
 
     # ------------------------------------------------
-    # 2. Add in new features
+    # 5. Reporting: Task, Response, and Baselines 
     # ------------------------------------------------
 
-    unique_train_sources = train_set['reference'].astype(str).unique().tolist()
-    global_tfidf = TfidfVectorizer(stop_words='english', max_features=10000)
-    global_tfidf.fit(unique_train_sources)
+    print("\n --- Final Reporting.")
+    final_model = clone(models[global_best_model_name])
+    final_model.fit(exploded_train[all_cols], Y)
+    test_probs = final_model.predict_proba(exploded_test[all_cols])[:, 1]
+    test_predictions = (test_probs >= global_best_threshold).astype(int)
 
-    exploded_train['sentence_length'] = exploded_train['sentence_chunks'].str.split().str.len()
-    exploded_train['word_overlap_ratio'] = exploded_train.apply(calculate_overlap, axis=1)
-    exploded_train['unmatched_numbers_count'] = exploded_train.apply(count_unmatched_numbers, axis=1)
-    exploded_train['semantic_similarity'] = compute_batch_cosine_similarity(exploded_train)
-    exploded_train['tfidf_similarity'] = compute_tfidf_overlap(exploded_train, global_tfidf)
-    exploded_train['is_hallucination'] = exploded_train.apply(tag_hallucination, axis=1)
+    exploded_test['pred_prob'] = test_probs
+    exploded_test['pred_label'] = test_predictions
+    exploded_test['baseline_prob'] = 1.0 - exploded_test['word_overlap_ratio']
 
-    exploded_test['sentence_length'] = exploded_test['sentence_chunks'].str.split().str.len()
-    exploded_test['word_overlap_ratio'] = exploded_test.apply(calculate_overlap, axis=1)
-    exploded_test['unmatched_numbers_count'] = exploded_test.apply(count_unmatched_numbers, axis=1)
-    exploded_test['semantic_similarity'] = compute_batch_cosine_similarity(exploded_test)
-    exploded_test['tfidf_similarity'] = compute_tfidf_overlap(exploded_test, global_tfidf)
-    exploded_test['is_hallucination'] = exploded_test.apply(tag_hallucination, axis=1)
+    test_auc = roc_auc_score(exploded_test['is_hallucination'], test_probs)
+    test_pr = average_precision_score(exploded_test['is_hallucination'], test_probs)
+    test_f1 = f1_score(exploded_test['is_hallucination'], test_predictions, zero_division=0)
+    print(f"Sentence | OVERALL      | Model AUROC: {test_auc:.4f} | PR-AUC: {test_pr:.4f} | F1: {test_f1:.4f}")
 
+    for task in ['QA', 'Summary', 'Data2txt']:
+        subset = exploded_test[exploded_test['task_type'] == task]
+        auc = roc_auc_score(subset['is_hallucination'], subset['pred_prob'])
+        base_auc = roc_auc_score(subset['is_hallucination'], subset['baseline_prob'])
+        print(f"Sentence | Task: {task:<8} | Model AUROC: {auc:.4f} | Baseline AUROC: {base_auc:.4f}")
 
-    #print(exploded_train[['sentence_length', 'word_overlap_ratio', 'unmatched_numbers_count']].describe())
-    #print()
-    #print(exploded_test[['sentence_length', 'word_overlap_ratio', 'unmatched_numbers_count']].describe())
-    #print()
-    
-    # Save the finished DataFrames for next time
-    print("\n --- Saving processed data to cache...")
-    exploded_train.to_pickle(train_cache)
-    exploded_test.to_pickle(test_cache)
-    with open(tfidf_cache, 'wb') as f:
-        pickle.dump(global_tfidf, f)
-
-# ------------------------------------------------
-# 2b. V2 features (computed once, then loaded from cache)
-# ------------------------------------------------
-exploded_train = load_or_build_v2(exploded_train, v2_train_cache, nlp, embedder)
-exploded_test  = load_or_build_v2(exploded_test,  v2_test_cache,  nlp, embedder)
-
-all_cols = BASE + LEXICAL_BEST + ENTITY_NUMBER + CONTEXT + NLI
-
-print('\n --- Feature Correlation Check.')
-corr = exploded_train['word_overlap_ratio'].corr(exploded_train['content_overlap_all'])
-print(f'Correlation between word_overlap_ratio and content_overlap_all: {corr:.4f}')
-if corr>0.95:
-    print('Dropping content_overlap_all due to high collinearity.')
-    all_cols.remove('content_overlap_all')
-    LEXICAL_BEST.remove('content_overlap_all')
-
-# ------------------------------------------------
-# 3. Model Training
-# ------------------------------------------------
-
-print("\n --- Data loaded for model training...")
-
-X = exploded_train[all_cols]
-Y = exploded_train['is_hallucination']
-groups = exploded_train['source_id']
-
-models = {
-    'Dummy (Baseline)': DummyClassifier(strategy='prior'),
-    'Decision Tree (Pruned)': DecisionTreeClassifier(max_depth=5, min_samples_leaf=20, class_weight='balanced', random_state=2024),
-    'Logistic Regression (Scaled)': make_pipeline(StandardScaler(), LogisticRegression(class_weight='balanced', max_iter=1000)),
-    'Random Forest': RandomForestClassifier(n_estimators=100, class_weight='balanced', random_state=2024, n_jobs=-1),
-    'XGBoost': XGBClassifier(scale_pos_weight=8, random_state=2024, n_jobs=-1)
-}
-
-global_best_model_name = None
-global_best_auc = 0.0
-global_oof_probs = None
-global_best_threshold = 0.5
-cv_results = {}
-
-for name, model in models.items():
-    mean_metrics, std_metrics, oof = cv_evaluate(model, X, Y, groups)
-    cv_results[name] = (mean_metrics, std_metrics)
-    print(f"\n| Model:  {name:<25} ")
-    print(f"| AUROC:  {mean_metrics['auroc']:.4f} ± {std_metrics['auroc']:.4f}")
-    print(f"| PR-AUC: {mean_metrics['pr_auc']:.4f}")
-    print(f"| F1:     {mean_metrics['best_f1']:.4f}")
-
-    if mean_metrics['auroc']>global_best_auc:
-        global_best_auc = mean_metrics['auroc']
-        global_best_model_name = name
-        global_oof_probs = oof
-        global_best_threshold = mean_metrics['best_thr']
-
-print(f"\nChampion Model: {global_best_model_name} (AUROC: {global_best_auc:.4f})")
-
-
-print("\n --- Tuning Response-level Threshold (OOF).")
-exploded_train['oof_prob'] = global_oof_probs
-resp_train = exploded_train.groupby('id').agg(
-    {
-        'is_hallucination': 'max',
-        'oof_prob': 'max'
+    response_df = exploded_test.groupby('id').agg({
+        'is_hallucination': 'max',  
+        'pred_prob': 'max',         
+        'baseline_prob': 'max',     
+        'task_type': 'first'
     }).reset_index()
 
-best_resp_thr = 0.5
-best_resp_f1 = 0
-for t in np.arange(0.01, 1.0, 0.01):
-    f1 = f1_score(resp_train['is_hallucination'], (resp_train['oof_prob'] >= t).astype(int), zero_division=0)
-    if f1 > best_resp_f1:
-        best_resp_f1 = f1
-        best_resp_thr = t
+    resp_auc = roc_auc_score(response_df['is_hallucination'], response_df['pred_prob'])
+    resp_base_auc = roc_auc_score(response_df['is_hallucination'], response_df['baseline_prob'])
+    response_df['pred_label'] = (response_df['pred_prob'] >= best_resp_thr).astype(int)
+    resp_f1 = f1_score(response_df['is_hallucination'], response_df['pred_label'], zero_division=0)
 
-print(f"Optimal Response-level Threshold: {best_resp_thr:.2f} (OOF F1: {best_resp_f1:.4f})")
-print(f"Train Response-level Base Rate: {resp_train['is_hallucination'].mean():.4f}")
+    print(f"\nResponse | Test Base Rate : {response_df['is_hallucination'].mean():.4f}")
+    print(f"Response | OVERALL      | Model AUROC: {resp_auc:.4f} | Baseline AUROC: {resp_base_auc:.4f}")
+    print(f"Response | Overall F1   : {resp_f1:.4f} (at tuned response threshold {best_resp_thr:.2f})")
 
-# ------------------------------------------------
-# 4. Leave-one-out Ablation Test
-# ------------------------------------------------
-print("\n --- Ablation Study.")
+    # ------------------------------------------------------
+    # 6. Freeze the detector(s). XAI lives in xai_faithfulness.py and only LOADS these files.
+    # ------------------------------------------------------
 
-Y = exploded_train['is_hallucination']
-groups = exploded_train['source_id']
+    def tune_response_threshold(oof_probs, frame):
+        tmp = frame[['id', 'is_hallucination']].copy()
+        tmp['p'] = oof_probs
+        r = tmp.groupby('id').agg({'is_hallucination': 'max', 'p': 'max'})
+        best_t, best_f = 0.5, 0.0
+        for t in np.arange(0.01, 1.0, 0.01):
+            f = f1_score(r['is_hallucination'], (r['p'] >= t).astype(int), zero_division=0)
+            if f > best_f:
+                best_t, best_f = t, f
+        return best_t
 
-experiments = {
-    'All Features': all_cols,
-    'No NLI': [c for c in all_cols if c not in NLI],
-    'No Context': [c for c in all_cols if c not in CONTEXT],
-    'No Entity/Num': [c for c in all_cols if c not in ENTITY_NUMBER],
-    'No Lexical': [c for c in all_cols if c not in LEXICAL_BEST],
-    'Evidence Only (No NLI/Context)': BASE + LEXICAL_BEST + ENTITY_NUMBER
-}
+    def freeze(tag, cols, sent_thr, resp_thr, cv_mean, cv_std):
+        cols = list(cols)
+        # fit on plain arrays (no feature-name warnings, faster SHAP/LIME)
+        model = clone(models[global_best_model_name]).fit(exploded_train[cols].values, Y.values)
 
-for name, cols in experiments.items():
-    mean, std, _ = cv_evaluate(models[global_best_model_name], exploded_train[cols], Y, groups)
-    print(f"{name:<30} AUROC {mean['auroc']:.4f}±{std['auroc']:.4f} | PR-AUC {mean['pr_auc']:.4f} | F1 {mean['best_f1']:.4f}")
+        # stratified training sample (task x label): LIME training data + background rows
+        parts = [g.sample(min(len(g), 1000), random_state=FREEZE_SEED)
+                for _, g in exploded_train.groupby(['task_type', 'is_hallucination'])]
+        X_ref = pd.concat(parts)[cols].values
+
+        X_te = exploded_test[cols].values
+        p_te = model.predict_proba(X_te)[:, 1]
+
+        meta = ['id', 'source_id', 'task_type', 'is_hallucination', 'sentence_chunks']
+        scored = exploded_test[meta + cols].copy()
+        scored['p_hallu'] = p_te
+        scored.to_pickle(f'{FROZEN_DIR}/test_scored_{tag}.pkl')
+
+        resp = scored.groupby('id').agg({'is_hallucination': 'max', 'p_hallu': 'max'})
+        model.predict_proba(X_te[:1000])                       # warm-up
+        t0 = time.time(); model.predict_proba(X_te[:1000])
+        ms_per_sentence = (time.time() - t0) / 1000 * 1000
+
+        test_metrics = {
+            'sentence_auroc': roc_auc_score(scored['is_hallucination'], p_te),
+            'sentence_pr_auc': average_precision_score(scored['is_hallucination'], p_te),
+            'sentence_f1': f1_score(scored['is_hallucination'], (p_te >= sent_thr).astype(int), zero_division=0),
+            'response_auroc': roc_auc_score(resp['is_hallucination'], resp['p_hallu']),
+            'response_f1': f1_score(resp['is_hallucination'], (resp['p_hallu'] >= resp_thr).astype(int), zero_division=0),
+            'response_base_rate': float(resp['is_hallucination'].mean()),
+            'classifier_ms_per_sentence': ms_per_sentence,
+        }
+        test_metrics = {k: float(v) for k, v in test_metrics.items()}
+
+        bundle = {
+            'tag': tag, 'model_name': global_best_model_name, 'model': model, 'feature_cols': cols,
+            'feature_groups': {'BASE': BASE, 'LEXICAL_BEST': LEXICAL_BEST, 'ENTITY_NUMBER': ENTITY_NUMBER,
+                            'CONTEXT': CONTEXT, 'NLI': NLI},
+            'threshold_sentence': float(sent_thr), 'threshold_response': float(resp_thr),
+            'medians': exploded_train[cols].median().values, 'means': exploded_train[cols].mean().values,
+            'X_ref': X_ref,
+            'cv_mean': {k: float(v) for k, v in cv_mean.items()}, 'cv_std': {k: float(v) for k, v in cv_std.items()},
+            'test_metrics': test_metrics, 'pipeline': PIPELINE_MODELS,
+            'versions': {'python': platform.python_version(), 'sklearn': sklearn.__version__,
+                        'numpy': np.__version__, 'pandas': pd.__version__, 'xgboost': xgboost.__version__},
+            'created': datetime.date.today().isoformat(),
+        }
+        path = f'{FROZEN_DIR}/frozen_{tag}.joblib'
+        joblib.dump(bundle, path, compress=3)
+        size_mb = os.path.getsize(path) / 1e6
+        with open(f'{FROZEN_DIR}/frozen_{tag}_metrics.json', 'w') as f:
+            json.dump({'tag': tag, 'model': global_best_model_name, 'features': cols,
+                    'threshold_sentence': float(sent_thr), 'threshold_response': float(resp_thr),
+                    'cv_mean': bundle['cv_mean'], 'cv_std': bundle['cv_std'],
+                    'test': test_metrics, 'model_file_mb': size_mb}, f, indent=2)
+        print(f"[{tag}] saved {path} ({size_mb:.1f} MB) | {len(cols)} features | "
+            f"test sentence AUROC {test_metrics['sentence_auroc']:.4f} | "
+            f"classifier {ms_per_sentence:.3f} ms/sentence")
+
+    FROZEN_DIR = './frozen'
+    os.makedirs(FROZEN_DIR, exist_ok=True)
+    FREEZE_SEED = 2024
+
+    # keep in sync with the models used in build_features_v2 / load_or_build_v2
+    PIPELINE_MODELS = {'spacy': 'en_core_web_sm', 'embedder': 'all-MiniLM-L6-v2',
+                    'nli': 'cross-encoder/nli-deberta-v3-small', 'tfidf_cache': tfidf_cache}
+
+    print("\n --- Freezing detectors.")
+    cm, cs = cv_results[global_best_model_name]
+    freeze('full', all_cols, global_best_threshold, best_resp_thr, cm, cs)
+
+    evidence_cols = BASE + LEXICAL_BEST + ENTITY_NUMBER       # no context, no NLI
+    em, es, e_oof = cv_evaluate(models[global_best_model_name], exploded_train[evidence_cols], Y, groups)
+    freeze('evidence_only', evidence_cols, em['best_thr'], tune_response_threshold(e_oof, exploded_train), em, es)
 
 
-# ------------------------------------------------
-# 5. Reporting: Task, Response, and Baselines 
-# ------------------------------------------------
-
-print("\n --- Final Reporting.")
-final_model = clone(models[global_best_model_name])
-final_model.fit(exploded_train[all_cols], Y)
-test_probs = final_model.predict_proba(exploded_test[all_cols])[:, 1]
-test_predictions = (test_probs >= global_best_threshold).astype(int)
-
-exploded_test['pred_prob'] = test_probs
-exploded_test['pred_label'] = test_predictions
-exploded_test['baseline_prob'] = 1.0 - exploded_test['word_overlap_ratio']
-
-test_auc = roc_auc_score(exploded_test['is_hallucination'], test_probs)
-test_pr = average_precision_score(exploded_test['is_hallucination'], test_probs)
-test_f1 = f1_score(exploded_test['is_hallucination'], test_predictions, zero_division=0)
-print(f"Sentence | OVERALL      | Model AUROC: {test_auc:.4f} | PR-AUC: {test_pr:.4f} | F1: {test_f1:.4f}")
-
-for task in ['QA', 'Summary', 'Data2txt']:
-    subset = exploded_test[exploded_test['task_type'] == task]
-    auc = roc_auc_score(subset['is_hallucination'], subset['pred_prob'])
-    base_auc = roc_auc_score(subset['is_hallucination'], subset['baseline_prob'])
-    print(f"Sentence | Task: {task:<8} | Model AUROC: {auc:.4f} | Baseline AUROC: {base_auc:.4f}")
-
-response_df = exploded_test.groupby('id').agg({
-    'is_hallucination': 'max',  
-    'pred_prob': 'max',         
-    'baseline_prob': 'max',     
-    'task_type': 'first'
-}).reset_index()
-
-resp_auc = roc_auc_score(response_df['is_hallucination'], response_df['pred_prob'])
-resp_base_auc = roc_auc_score(response_df['is_hallucination'], response_df['baseline_prob'])
-response_df['pred_label'] = (response_df['pred_prob'] >= best_resp_thr).astype(int)
-resp_f1 = f1_score(response_df['is_hallucination'], response_df['pred_label'], zero_division=0)
-
-print(f"\nResponse | Test Base Rate : {response_df['is_hallucination'].mean():.4f}")
-print(f"Response | OVERALL      | Model AUROC: {resp_auc:.4f} | Baseline AUROC: {resp_base_auc:.4f}")
-print(f"Response | Overall F1   : {resp_f1:.4f} (at tuned response threshold {best_resp_thr:.2f})")
-
-# ------------------------------------------------------
-# 6. Freeze the detector(s). XAI lives in xai_faithfulness.py and only LOADS these files.
-# ------------------------------------------------------
-
-def tune_response_threshold(oof_probs, frame):
-    tmp = frame[['id', 'is_hallucination']].copy()
-    tmp['p'] = oof_probs
-    r = tmp.groupby('id').agg({'is_hallucination': 'max', 'p': 'max'})
-    best_t, best_f = 0.5, 0.0
-    for t in np.arange(0.01, 1.0, 0.01):
-        f = f1_score(r['is_hallucination'], (r['p'] >= t).astype(int), zero_division=0)
-        if f > best_f:
-            best_t, best_f = t, f
-    return best_t
-
-def freeze(tag, cols, sent_thr, resp_thr, cv_mean, cv_std):
-    cols = list(cols)
-    # fit on plain arrays (no feature-name warnings, faster SHAP/LIME)
-    model = clone(models[global_best_model_name]).fit(exploded_train[cols].values, Y.values)
-
-    # stratified training sample (task x label): LIME training data + background rows
-    parts = [g.sample(min(len(g), 1000), random_state=FREEZE_SEED)
-             for _, g in exploded_train.groupby(['task_type', 'is_hallucination'])]
-    X_ref = pd.concat(parts)[cols].values
-
-    X_te = exploded_test[cols].values
-    p_te = model.predict_proba(X_te)[:, 1]
-
-    meta = ['id', 'source_id', 'task_type', 'is_hallucination', 'sentence_chunks']
-    scored = exploded_test[meta + cols].copy()
-    scored['p_hallu'] = p_te
-    scored.to_pickle(f'{FROZEN_DIR}/test_scored_{tag}.pkl')
-
-    resp = scored.groupby('id').agg({'is_hallucination': 'max', 'p_hallu': 'max'})
-    model.predict_proba(X_te[:1000])                       # warm-up
-    t0 = time.time(); model.predict_proba(X_te[:1000])
-    ms_per_sentence = (time.time() - t0) / 1000 * 1000
-
-    test_metrics = {
-        'sentence_auroc': roc_auc_score(scored['is_hallucination'], p_te),
-        'sentence_pr_auc': average_precision_score(scored['is_hallucination'], p_te),
-        'sentence_f1': f1_score(scored['is_hallucination'], (p_te >= sent_thr).astype(int), zero_division=0),
-        'response_auroc': roc_auc_score(resp['is_hallucination'], resp['p_hallu']),
-        'response_f1': f1_score(resp['is_hallucination'], (resp['p_hallu'] >= resp_thr).astype(int), zero_division=0),
-        'response_base_rate': float(resp['is_hallucination'].mean()),
-        'classifier_ms_per_sentence': ms_per_sentence,
-    }
-    test_metrics = {k: float(v) for k, v in test_metrics.items()}
-
-    bundle = {
-        'tag': tag, 'model_name': global_best_model_name, 'model': model, 'feature_cols': cols,
-        'feature_groups': {'BASE': BASE, 'LEXICAL_BEST': LEXICAL_BEST, 'ENTITY_NUMBER': ENTITY_NUMBER,
-                           'CONTEXT': CONTEXT, 'NLI': NLI},
-        'threshold_sentence': float(sent_thr), 'threshold_response': float(resp_thr),
-        'medians': exploded_train[cols].median().values, 'means': exploded_train[cols].mean().values,
-        'X_ref': X_ref,
-        'cv_mean': {k: float(v) for k, v in cv_mean.items()}, 'cv_std': {k: float(v) for k, v in cv_std.items()},
-        'test_metrics': test_metrics, 'pipeline': PIPELINE_MODELS,
-        'versions': {'python': platform.python_version(), 'sklearn': sklearn.__version__,
-                     'numpy': np.__version__, 'pandas': pd.__version__, 'xgboost': xgboost.__version__},
-        'created': datetime.date.today().isoformat(),
-    }
-    path = f'{FROZEN_DIR}/frozen_{tag}.joblib'
-    joblib.dump(bundle, path, compress=3)
-    size_mb = os.path.getsize(path) / 1e6
-    with open(f'{FROZEN_DIR}/frozen_{tag}_metrics.json', 'w') as f:
-        json.dump({'tag': tag, 'model': global_best_model_name, 'features': cols,
-                   'threshold_sentence': float(sent_thr), 'threshold_response': float(resp_thr),
-                   'cv_mean': bundle['cv_mean'], 'cv_std': bundle['cv_std'],
-                   'test': test_metrics, 'model_file_mb': size_mb}, f, indent=2)
-    print(f"[{tag}] saved {path} ({size_mb:.1f} MB) | {len(cols)} features | "
-          f"test sentence AUROC {test_metrics['sentence_auroc']:.4f} | "
-          f"classifier {ms_per_sentence:.3f} ms/sentence")
-
-FROZEN_DIR = './frozen'
-os.makedirs(FROZEN_DIR, exist_ok=True)
-FREEZE_SEED = 2024
-
-# keep in sync with the models used in build_features_v2 / load_or_build_v2
-PIPELINE_MODELS = {'spacy': 'en_core_web_sm', 'embedder': 'all-MiniLM-L6-v2',
-                   'nli': 'cross-encoder/nli-deberta-v3-small', 'tfidf_cache': tfidf_cache}
-
-print("\n --- Freezing detectors.")
-cm, cs = cv_results[global_best_model_name]
-freeze('full', all_cols, global_best_threshold, best_resp_thr, cm, cs)
-
-evidence_cols = BASE + LEXICAL_BEST + ENTITY_NUMBER       # no context, no NLI
-em, es, e_oof = cv_evaluate(models[global_best_model_name], exploded_train[evidence_cols], Y, groups)
-freeze('evidence_only', evidence_cols, em['best_thr'], tune_response_threshold(e_oof, exploded_train), em, es)
+if __name__ == "__main__":
+    main()
