@@ -52,7 +52,7 @@
     "response_auroc": 0.81441134260223,
     "response_f1": 0.6683915480810694,
     "response_base_rate": 0.3525233644859813,
-    "classifier_ms_per_sentence": 0.031807899475097656
+    "classifier_ms_per_sentence": 0.03501749038696289
   },
-  "model_file_mb": 33.079455
+  "model_file_mb": 33.079456
 }

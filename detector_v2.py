@@ -28,7 +28,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
 from sklearn.base import clone
 
-
+from dotenv import load_dotenv
 
 # --------------------------------------
 # Feature groups
@@ -52,6 +52,8 @@ TOKEN_RE = re.compile(r"\b\w+\b")
 NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 SKIP_ENT_LABELS = {"CARDINAL", "ORDINAL"}   # numbers are handled by the number features
 
+load_dotenv()
+print(f"HF_TOKEN: {'✅ Set' if os.getenv('HF_TOKEN') else '❌ Not set'}")
 
 # --------------------------------------
 # 0. Helper Functions
@@ -59,7 +61,7 @@ SKIP_ENT_LABELS = {"CARDINAL", "ORDINAL"}   # numbers are handled by the number 
 
 nlp = spacy.load("en_core_web_sm")
 tqdm.pandas(desc="Processing..")
-embedder = SentenceTransformer('all-MiniLM-L6-v2')
+embedder = SentenceTransformer('all-MiniLM-L6-v2', token=os.getenv("HF_TOKEN"))
 
 def chunk_into_sentence(text):
     doc = nlp(text)
